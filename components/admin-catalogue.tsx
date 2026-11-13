@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Database, FileWarning, ScanLine, Users } from "@/components/icons";
+import { Database, FileWarning, ScanLine, Users, ShieldCheck, User } from "@/components/icons";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import {
   getLocalProducts,
@@ -12,6 +12,7 @@ import {
   getLocalProfiles,
   updateLocalUserRole,
   getLocalAudits,
+  createLocalAccount,
   INITIAL_PRODUCTS,
   INITIAL_VERSIONS,
 } from "@/lib/local-store";
@@ -269,6 +270,46 @@ export function AdminCatalogue({
     await load();
   }
 
+  async function handleAddUser(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const email = String(form.get("userEmail") || "").trim();
+    const name = String(form.get("userName") || "").trim();
+    const role = (form.get("userRole") as Profile["role"]) || "admin";
+
+    if (!email) {
+      feedback("", "Please enter an email address.");
+      return;
+    }
+
+    if (isSupabaseConfigured()) {
+      try {
+        const supabase = createClient();
+        const { data, error: inviteError } = await supabase.auth.signUp({
+          email,
+          password: "TempPassword123!",
+          options: { data: { name, role } },
+        });
+        if (inviteError) throw inviteError;
+        if (data?.user) {
+          await supabase.rpc("set_user_role", { p_user_id: data.user.id, p_role: role });
+        }
+      } catch (err) {
+        feedback("", err instanceof Error ? err.message : "Could not add user.");
+        return;
+      }
+    }
+
+    createLocalAccount({ email, name: name || undefined, role });
+    feedback(
+      role === "admin"
+        ? `Administrator account added successfully for ${email}.`
+        : `User account created successfully for ${email} as ${role.toUpperCase()}.`
+    );
+    event.currentTarget.reset();
+    await load();
+  }
+
   function loadSampleData() {
     localStorage.setItem("pharmalens_local_products", JSON.stringify(INITIAL_PRODUCTS));
     localStorage.setItem("pharmalens_local_versions", JSON.stringify(INITIAL_VERSIONS));
@@ -425,7 +466,33 @@ export function AdminCatalogue({
       </section>
 
       <section className="card admin-panel">
-        <h2>User roles & permissions</h2>
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "8px" }}>
+          <ShieldCheck size={24} style={{ color: "var(--teal)" }} />
+          <h2 style={{ margin: 0 }}>Add Administrator &amp; Create Accounts</h2>
+        </div>
+        <p>Create new administrator accounts, pharmacist reviewers, or patients directly with full permissions.</p>
+        <form className="admin-form" onSubmit={handleAddUser}>
+          <Field name="userEmail" label="User email address" type="email" placeholder="e.g. newadmin@pharmalens.com" />
+          <Field name="userName" label="Full name / Display name" placeholder="e.g. Dr. Jane Doe" required={false} />
+          <div className="field">
+            <label htmlFor="userRole">Assigned role</label>
+            <select id="userRole" name="userRole" defaultValue="admin">
+              <option value="admin">🛡️ Administrator (Full admin privileges)</option>
+              <option value="reviewer">🩺 Pharmacist Reviewer</option>
+              <option value="user">👤 Standard User</option>
+            </select>
+          </div>
+          <div className="wide">
+            <button className="button button-primary">
+              <User size={18} />
+              Add Administrator / Create Account
+            </button>
+          </div>
+        </form>
+      </section>
+
+      <section className="card admin-panel">
+        <h2>User roles &amp; permissions</h2>
         <p>Assign administrative or pharmacist review permissions to accounts.</p>
         <div className="role-list">
           {profiles.map((profile) => (

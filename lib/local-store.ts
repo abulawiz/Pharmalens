@@ -241,6 +241,29 @@ export function saveLocalProfiles(profiles: LocalUser[]): void {
   localStorage.setItem(STORAGE_KEYS.PROFILES, JSON.stringify(profiles));
 }
 
+export function createLocalAccount(data: { email: string; name?: string; role: LocalRole }): LocalUser {
+  const profiles = getLocalProfiles();
+  const cleanEmail = data.email.trim().toLowerCase();
+  const existingIndex = profiles.findIndex((p) => p.email.toLowerCase() === cleanEmail);
+  if (existingIndex >= 0) {
+    profiles[existingIndex].role = data.role;
+    if (data.name) profiles[existingIndex].name = data.name;
+    saveLocalProfiles(profiles);
+    recordAuditEvent(`USER_ROLE_UPDATED_TO_${data.role.toUpperCase()}`, `user:${cleanEmail}`);
+    return profiles[existingIndex];
+  }
+  const created: LocalUser = {
+    id: `usr_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+    email: cleanEmail,
+    name: data.name?.trim() || cleanEmail.split("@")[0],
+    role: data.role,
+  };
+  profiles.unshift(created);
+  saveLocalProfiles(profiles);
+  recordAuditEvent(`USER_CREATED_${data.role.toUpperCase()}`, `user:${created.id}`);
+  return created;
+}
+
 export function updateLocalUserRole(userId: string, role: LocalRole): void {
   const profiles = getLocalProfiles().map(p => (p.id === userId ? { ...p, role } : p));
   saveLocalProfiles(profiles);
