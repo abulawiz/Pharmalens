@@ -1,47 +1,840 @@
 "use client";
 /* eslint-disable @next/next/no-img-element -- local object URLs must not pass through an image optimizer */
 
-import { useEffect,useRef,useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { Camera,Info,ScanLine,Trash2,Upload,X } from "@/components/icons";
+import { Camera, Info, ScanLine, Trash2, Upload, X } from "@/components/icons";
 import { OutcomeCard } from "@/components/outcome-card";
-import { deleteGuestScan,saveGuestScan } from "@/lib/guest-storage";
+import { deleteGuestScan, saveGuestScan } from "@/lib/guest-storage";
 import { SCREENING_DISCLAIMER } from "@/lib/screening";
-import { createClient,isSupabaseConfigured } from "@/lib/supabase/client";
+import { createClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import { getLocalVersions, getLocalUser } from "@/lib/local-store";
 import type { ScanRecord } from "@/lib/types";
-import type { CatalogueReference,ExtractedCandidates,ImageQualityResult,OcrResult,PackageSide,ScreeningDecision } from "@/lib/services/contracts";
+import type {
+  CatalogueReference,
+  ExtractedCandidates,
+  ImageQualityResult,
+  OcrResult,
+  PackageSide,
+  ScreeningDecision,
+} from "@/lib/services/contracts";
 import { correctField } from "@/lib/services/field-extraction";
-import { BrowserImageQualityService,normalizeImage } from "@/lib/services/image-quality";
+import { BrowserImageQualityService, normalizeImage } from "@/lib/services/image-quality";
 import { TesseractOcrService } from "@/lib/services/ocr";
 import { TransparentScreeningDecisionService } from "@/lib/services/screening-decision";
 
-type Stage="capture"|"review"|"result";
-type Capture={side:PackageSide;file:File;url:string;rotation:number;quality:ImageQualityResult};
-const fieldLabels:Record<keyof ExtractedCandidates,string>={productName:"Product name",strength:"Strength",dosageForm:"Dosage form",manufacturer:"Manufacturer",registrationNumber:"Printed registration number",batchNumber:"Batch / lot number",manufacturingDate:"Manufacturing date",expiryDate:"Expiry date"};
-const qualityService=new BrowserImageQualityService(),ocrService=new TesseractOcrService(),decisionService=new TransparentScreeningDecisionService();
+type Stage = "capture" | "review" | "result";
+type Capture = { side: PackageSide; file: File; url: string; rotation: number; quality: ImageQualityResult };
 
-export function ScanWorkflow({initialMode="camera"}:{initialMode?:"camera"|"upload"}){
- const [stage,setStage]=useState<Stage>("capture"),[captures,setCaptures]=useState<Capture[]>([]),[targetSide,setTargetSide]=useState<PackageSide>("front"),[cameraOpen,setCameraOpen]=useState(false),[cameraError,setCameraError]=useState(""),[error,setError]=useState(""),[reading,setReading]=useState(false),[saving,setSaving]=useState(false),[saved,setSaved]=useState(false),[progress,setProgress]=useState(0),[ocr,setOcr]=useState<OcrResult|null>(null),[decision,setDecision]=useState<ScreeningDecision|null>(null),[reference,setReference]=useState<CatalogueReference|null>(null),[record,setRecord]=useState<ScanRecord|null>(null),[retainImages,setRetainImages]=useState(false),[uploadConsent,setUploadConsent]=useState(false),videoRef=useRef<HTMLVideoElement>(null),streamRef=useRef<MediaStream|null>(null),inputRef=useRef<HTMLInputElement>(null),openedUploadRef=useRef(false);
- useEffect(()=>()=>{streamRef.current?.getTracks().forEach(track=>track.stop())},[]);
- useEffect(()=>{if(initialMode==="upload"&&!openedUploadRef.current){openedUploadRef.current=true;queueMicrotask(()=>inputRef.current?.click())}},[initialMode]);
- const front=captures.find(item=>item.side==="front");
- async function validateAndAdd(file:File,side:PackageSide){setError("");if(!["image/jpeg","image/png","image/webp"].includes(file.type)){setError("Use a JPEG, PNG or WebP image.");return}if(file.size>10*1024*1024){setError("This image is larger than the measured 10 MB upload limit.");return}try{const normalized=await normalizeImage(file);const quality=await qualityService.assess(normalized);if(quality.issues.some(issue=>issue.code==="TOO_SMALL")){setError(quality.issues.find(issue=>issue.code==="TOO_SMALL")!.message);return}setCaptures(current=>{const existing=current.find(item=>item.side===side);if(existing)URL.revokeObjectURL(existing.url);return [...current.filter(item=>item.side!==side),{side,file:normalized,url:URL.createObjectURL(normalized),rotation:0,quality}]})}catch(cause){setError(cause instanceof Error?cause.message:"The image could not be processed.")}}
- async function openCamera(side:PackageSide){setTargetSide(side);setCameraError("");if(!navigator.mediaDevices?.getUserMedia){setCameraError("Camera access is unavailable in this browser. Choose an image instead.");return}try{const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"},width:{ideal:1920},height:{ideal:1080}},audio:false});streamRef.current=stream;setCameraOpen(true);queueMicrotask(()=>{if(videoRef.current){videoRef.current.srcObject=stream;void videoRef.current.play()}})}catch{setCameraError("Camera permission was denied or no camera is available. Allow camera access in browser settings, then retry, or choose an image.")}}
- function closeCamera(){streamRef.current?.getTracks().forEach(track=>track.stop());streamRef.current=null;setCameraOpen(false)}
- async function captureFrame(){const video=videoRef.current;if(!video||!video.videoWidth){setCameraError("The camera is not ready yet.");return}const canvas=document.createElement("canvas");canvas.width=video.videoWidth;canvas.height=video.videoHeight;canvas.getContext("2d")?.drawImage(video,0,0);const blob=await new Promise<Blob|null>(resolve=>canvas.toBlob(resolve,"image/jpeg",.9));closeCamera();if(blob)await validateAndAdd(new File([blob],`${targetSide}.jpg`,{type:"image/jpeg"}),targetSide)}
- async function rotate(side:PackageSide){const item=captures.find(value=>value.side===side);if(!item)return;const next=(item.rotation+90)%360;const file=await normalizeImage(item.file,90);const quality=await qualityService.assess(file);setCaptures(current=>current.map(value=>{if(value.side!==side)return value;URL.revokeObjectURL(value.url);return {...value,file,url:URL.createObjectURL(file),rotation:next,quality}}))}
- function remove(side:PackageSide){setCaptures(current=>{const item=current.find(value=>value.side===side);if(item)URL.revokeObjectURL(item.url);return current.filter(value=>value.side!==side)})}
- async function beginReview(){if(!front){setError("Add a front-of-pack image before continuing.");return}if(!front.quality.acceptable){setError("The front image failed measured quality checks. Retake it in brighter, even light.");return}setReading(true);setProgress(0);setError("");try{setOcr(await ocrService.extract(front.file,setProgress));setStage("review")}catch{setError("OCR processing failed. No favourable result was produced. Retake the image or try another supported browser.")}finally{setReading(false)}}
- function editField(key:keyof ExtractedCandidates,value:string){if(ocr)setOcr({...ocr,fields:correctField(ocr.fields,key,value)})}
- async function findReference():Promise<CatalogueReference|null>{if(!ocr||!isSupabaseConfigured())return null;const supabase=createClient();const registration=ocr.fields.registrationNumber.value.trim();const productName=ocr.fields.productName.value.trim().replace(/[%_]/g,"");if(!registration&&productName.length<2)return null;let query=supabase.from("reference_versions").select("id, version, packaging_version, package_text, reviewed_at, source_name, product_id, products!inner(id,name,presentation,strength,dosage_form,manufacturer,registration_number)").eq("status","published").limit(1);if(registration)query=query.eq("products.registration_number",registration);else query=query.ilike("products.name",`%${productName}%`);const {data}=await query.maybeSingle();if(!data)return null;const product=(Array.isArray(data.products)?data.products[0]:data.products) as unknown as {id:string;name:string;presentation:string;strength:string;dosage_form:string;manufacturer:string;registration_number:string|null};return{id:data.id,version:data.version,productId:product.id,productName:product.name,presentation:product.presentation,strength:product.strength,dosageForm:product.dosage_form,manufacturer:product.manufacturer,registrationNumber:product.registration_number??"",packageText:data.package_text??[],packagingVersion:data.packaging_version,reviewedAt:data.reviewed_at,sourceName:data.source_name}}
- async function screen(){if(!front||!ocr)return;setError("");const matchedReference=await findReference();const result=decisionService.decide({quality:front.quality,ocr,reference:matchedReference,hasFrontImage:true});const next:ScanRecord={id:crypto.randomUUID(),createdAt:new Date().toISOString(),productName:ocr.fields.productName.value||"Unidentified product",manufacturer:ocr.fields.manufacturer.value,batchNumber:ocr.fields.batchNumber.value,expiryDate:ocr.fields.expiryDate.value,registrationNumber:ocr.fields.registrationNumber.value,extractedText:ocr.rawText,outcome:result.outcome,rationale:result.explanation,source:"guest",expiryStatus:result.expiryStatus,reasonCodes:result.reasonCodes,comparisonScope:result.comparisonScope,policyVersion:result.policyVersion,modelIdentifier:result.modelIdentifier,referenceVersion:result.referenceVersion,referenceReviewedAt:result.referenceReviewedAt,referenceSource:matchedReference?.sourceName??null,checks:result.checks};setReference(matchedReference);setRecord(next);setDecision(result);setSaved(false);setStage("result")}
- async function persistResult(){if(!record||!decision||!ocr||saved)return;if(retainImages&&!uploadConsent){setError("Consent is required before images can be uploaded and retained.");return}setSaving(true);setError("");try{if(!isSupabaseConfigured()){saveGuestScan(record);setSaved(true);return}const supabase=createClient();const {data:{user}}=await supabase.auth.getUser();if(!user){saveGuestScan(record);setSaved(true);return}const payload={id:record.id,user_id:user.id,product_name:record.productName,manufacturer:record.manufacturer||null,batch_number:record.batchNumber||null,expiry_date_text:record.expiryDate||null,registration_number:record.registrationNumber||null,extracted_text:record.extractedText,outcome:record.outcome,rationale:record.rationale,reference_version_id:decision.referenceId,reference_snapshot:reference,reason_codes:decision.reasonCodes,comparison_scope:decision.comparisonScope,expiry_status:decision.expiryStatus,retain_images:retainImages,decision_policy_identifier:decision.policyVersion,model_identifier:decision.modelIdentifier};const {data:cloudScan,error:saveError}=await supabase.from("scans").insert(payload).select("id,public_scan_id,created_at").single();if(saveError||!cloudScan)throw saveError??new Error("The scan record was not returned.");let consentId:string|null=null;const cleanup=async(paths:string[]=[])=>{if(paths.length)await supabase.storage.from("package-images").remove(paths);await supabase.from("scans").delete().eq("id",cloudScan.id);if(consentId)await supabase.from("consent_records").delete().eq("id",consentId)};const {error:fieldsError}=await supabase.from("extracted_fields").insert(Object.entries(ocr.fields).map(([name,value])=>({scan_id:cloudScan.id,field_name:name,machine_value:value.source==="machine"?value.value:null,machine_confidence:value.confidence,user_value:value.source==="manual"?value.value:null,source:value.source,corrected:value.corrected,ambiguous:value.ambiguous??false})));if(fieldsError){await cleanup();throw fieldsError}if(decision.checks.length){const {error:checksError}=await supabase.from("screening_checks").insert(decision.checks.map(check=>({scan_id:cloudScan.id,reason_code:check.code,status:check.status,observed:check.observed,expected:check.expected,evidence_source:check.evidenceSource})));if(checksError){await cleanup();throw checksError}}const uploaded:string[]=[];if(retainImages){const {data:consent,error:consentError}=await supabase.from("consent_records").insert({user_id:user.id,purpose:"image_retention",granted:true,policy_version:"privacy-v1"}).select("id").single();if(consentError||!consent){await cleanup();throw consentError??new Error("Image retention consent was not recorded.")}consentId=consent.id;for(const item of captures){const path=`${user.id}/${cloudScan.id}/${item.side}.jpg`;const {error:uploadError}=await supabase.storage.from("package-images").upload(path,item.file,{contentType:"image/jpeg"});if(uploadError){await cleanup(uploaded);throw uploadError}uploaded.push(path);const {error:imageError}=await supabase.from("scan_images").insert({scan_id:cloudScan.id,user_id:user.id,storage_path:path,package_side:item.side,width:item.quality.measurements.width,height:item.quality.measurements.height,bytes:item.file.size,quality_measurements:item.quality.measurements});if(imageError){await cleanup(uploaded);throw imageError}}}setRecord({...record,id:cloudScan.id,publicScanId:cloudScan.public_scan_id,createdAt:cloudScan.created_at,source:"account"});setSaved(true)}catch{setError("The scan could not be saved privately. Any partial record was removed; the screening result is unchanged.")}finally{setSaving(false)}}
- function reset(){setStage("capture");setCaptures(current=>{current.forEach(item=>URL.revokeObjectURL(item.url));return[]});setOcr(null);setDecision(null);setReference(null);setRecord(null);setSaved(false);setError("");setProgress(0);setRetainImages(false);setUploadConsent(false)}
- async function deleteResult(){if(!record)return;if(record.source==="account"&&isSupabaseConfigured()){const supabase=createClient();const {data:stored}=await supabase.from("scan_images").select("storage_path").eq("scan_id",record.id);if(stored?.length)await supabase.storage.from("package-images").remove(stored.map(item=>item.storage_path));await supabase.from("scans").delete().eq("id",record.id)}else deleteGuestScan(record.id);reset()}
+const fieldLabels: Record<keyof ExtractedCandidates, string> = {
+  productName: "Medicine name",
+  strength: "Strength",
+  dosageForm: "Dosage form",
+  manufacturer: "Manufacturer",
+  registrationNumber: "NAFDAC / Reg number",
+  batchNumber: "Batch number",
+  manufacturingDate: "Manufacturing date",
+  expiryDate: "Expiry date",
+};
 
- if(stage==="capture")return <><div className="capture-grid"><section className="card capture-primary"><span className="eyebrow">Step 1 of 3 · Capture</span><h2>Add the front of the package</h2><p>Keep the complete panel flat, bright and readable. Avoid glare, fingers and personal information.</p>{front?<ImageTile item={front} required onRotate={()=>rotate("front")} onRemove={()=>remove("front")}/>:<div className="scan-target"><Camera size={48}/><i className="t1"/><i className="t2"/><i className="t3"/><i className="t4"/></div>}<div className="capture-actions"><button className="button button-primary" onClick={()=>openCamera("front")}><Camera size={18}/>{front?"Retake front":"Use rear camera"}</button><button className="button button-secondary" onClick={()=>{setTargetSide("front");inputRef.current?.click()}}><Upload size={18}/>Choose image</button></div><input ref={inputRef} hidden type="file" accept="image/jpeg,image/png,image/webp" capture="environment" onChange={event=>{void validateAndAdd(event.target.files?.[0] as File,targetSide);event.currentTarget.value=""}}/>{cameraError&&<div className="form-alert error" role="alert">{cameraError}</div>}{error&&<div className="form-alert error" role="alert">{error}</div>}{reading?<div className="reading"><ScanLine/><strong>Reading visible label text… {progress}%</strong><div className="progress"><span style={{width:`${progress}%`}}/></div></div>:<button disabled={!front} onClick={beginReview} className="button button-primary full">Review extracted details</button>}</section><aside className="card optional-images"><span className="eyebrow">Optional evidence</span><h3>Back or side panels</h3><p>Additional panels can preserve batch, expiry and manufacturer evidence.</p>{(["back","side"] as PackageSide[]).map(side=>{const item=captures.find(value=>value.side===side);return item?<ImageTile key={side} item={item} onRotate={()=>rotate(side)} onRemove={()=>remove(side)}/>:<button key={side} className="add-side" onClick={()=>{setTargetSide(side);inputRef.current?.click()}}><Upload size={18}/>Add {side} image</button>})}<div className="info-note"><Info size={18}/><span>Brightness, dimensions and contrast are measured. Blur detection is a heuristic and is labelled as such.</span></div></aside></div>{cameraOpen&&<div className="camera-modal" role="dialog" aria-modal="true" aria-label="Camera capture"><div><video ref={videoRef} playsInline muted/><button className="camera-close" onClick={closeCamera} aria-label="Close camera"><X/></button><button className="camera-shutter" onClick={captureFrame} aria-label="Take photograph"><span/></button></div></div>}</>;
- if(stage==="review"&&ocr)return <div className="review-grid"><section className="card image-review"><img src={front!.url} alt="Front of selected medicine package"/><div className="quality-summary"><strong>Measured image checks</strong><span>{front!.quality.measurements.width} × {front!.quality.measurements.height}px · {Math.round(front!.file.size/1024)} KB</span>{front!.quality.issues.map(issue=><small key={issue.code}>{issue.kind==="heuristic"?"Heuristic: ":""}{issue.message}</small>)}</div><button className="button button-secondary" onClick={()=>setStage("capture")}>Retake or add images</button></section><section className="card extracted-form"><span className="eyebrow">Step 2 of 3 · Review</span><h2>Check every extracted value</h2><p>Confidence is OCR engine confidence, not authenticity confidence. Dates with uncertain ordering remain marked ambiguous.</p>{(Object.keys(fieldLabels) as Array<keyof ExtractedCandidates>).map(key=>{const field=ocr.fields[key];return <div className="field extracted-field" key={key}><label htmlFor={key}>{fieldLabels[key]} <span className={`source-tag source-${field.source}`}>{field.source}{field.confidence!==null?` · ${field.confidence}%`:""}</span></label><input id={key} value={field.value} onChange={event=>editField(key,event.target.value)} placeholder="Not detected"/>{field.ambiguous&&<small className="field-warning">Ambiguous date format—confirm the intended month and year.</small>}</div>})}<details><summary>Raw OCR text and engine</summary><p className="ocr-engine">{ocr.engineId} · overall confidence {ocr.confidence??"unavailable"}{ocr.confidence!==null?"%":""}</p><textarea readOnly value={ocr.rawText} rows={7}/></details><label className="consent"><input checked={retainImages} onChange={event=>setRetainImages(event.target.checked)} type="checkbox"/><span><strong>Retain package images with my account</strong><small>OCR runs locally in this build. If signed in, selected images are uploaded to private Supabase storage only when this is enabled.</small></span></label>{retainImages&&<label className="consent"><input checked={uploadConsent} onChange={event=>setUploadConsent(event.target.checked)} type="checkbox"/><span><strong>I consent to private image upload and retention.</strong><small>This does not consent to reporting, external transmission or model training.</small></span></label>}{error&&<div className="form-alert error">{error}</div>}<button onClick={screen} className="button button-primary full">Screen label details <ScanLine size={18}/></button></section></div>;
- return <div className="result-wrap">{record&&decision&&<><div className="result-top card"><span className="eyebrow">Step 3 of 3 · Preliminary screening result</span><OutcomeCard outcome={record.outcome} rationale={record.rationale}/><p className="result-disclaimer">{SCREENING_DISCLAIMER}</p></div><div className="result-grid"><section className="card result-image"><img src={front!.url} alt="Screened front-of-pack evidence"/><span>{decision.comparisonScope==="label_details"?"Label-details comparison":"No reference comparison"}</span></section><section className="card result-details"><h2>Evidence summary</h2><dl><div><dt>Recognised label</dt><dd>{record.productName}</dd></div><div><dt>Expiry status</dt><dd className={`expiry-${decision.expiryStatus}`}>{decision.expiryStatus.replaceAll("_"," ")}</dd></div><div><dt>Reference version</dt><dd>{decision.referenceVersion?`v${decision.referenceVersion}`:"None used"}</dd></div><div><dt>Reference reviewed</dt><dd>{decision.referenceReviewedAt?new Date(decision.referenceReviewedAt).toLocaleDateString("en-NG"):"No reference used"}</dd></div><div><dt>Reference source</dt><dd>{reference?.sourceName??"No reference used"}</dd></div><div><dt>Policy</dt><dd>{decision.policyVersion}</dd></div><div><dt>Packaging model</dt><dd>{decision.modelIdentifier??"Not configured or run"}</dd></div></dl></section></div><section className="card evidence-card"><h2>Checks and unresolved evidence</h2>{decision.checks.length?decision.checks.map(check=><div className="evidence-row" key={check.code}><span className={`check-status check-${check.status}`}>{check.status}</span><div><strong>{check.label}</strong><small>{check.code} · {check.evidenceSource.replaceAll("_"," ")}</small></div><span>{check.observed||"Not resolved"} / {check.expected||"No reference"}</span></div>):<p>No comparison checks were supported by the available evidence.</p>}</section><div className="card next-steps"><h2>Suggested next steps</h2><p>{saved&&record.source==="account"?"This result is saved privately and can be submitted to the configured review queue.":"Consult a licensed pharmacist if anything looks unusual. A review request requires an account, a saved scan and explicit reporting consent."}</p>{error&&<div className="form-alert error" role="alert">{error}</div>}{saved&&<div className="form-alert success" role="status">{record.source==="account"?"Saved to your private cloud history.":"Saved only in this browser on this device."}</div>}<div className="result-actions">{!saved&&<button onClick={()=>setStage("review")} className="button button-secondary">Review extracted details</button>}<button onClick={()=>setStage("capture")} className="button button-secondary">Retake photograph</button><button onClick={reset} className="button button-secondary"><Camera size={18}/>Scan another package</button>{!saved?<button onClick={persistResult} disabled={saving} className="button button-primary">{saving?"Saving…":"Save scan"}</button>:record.source==="account"?<><Link className="button button-primary" href={`/history/${record.id}`}>View saved scan</Link><Link className="button button-secondary" href={`/reports?scan=${record.id}`}>Request professional review</Link></>:<Link className="button button-secondary" href="/signup">Create account for review</Link>}<button onClick={deleteResult} className="button button-ghost"><Trash2 size={17}/>{saved?"Delete saved scan":"Discard result"}</button></div></div></>}</div>;
+const qualityService = new BrowserImageQualityService(),
+  ocrService = new TesseractOcrService(),
+  decisionService = new TransparentScreeningDecisionService();
+
+export function ScanWorkflow({ initialMode = "camera" }: { initialMode?: "camera" | "upload" }) {
+  const [stage, setStage] = useState<Stage>("capture"),
+    [captures, setCaptures] = useState<Capture[]>([]),
+    [targetSide, setTargetSide] = useState<PackageSide>("front"),
+    [cameraOpen, setCameraOpen] = useState(false),
+    [cameraError, setCameraError] = useState(""),
+    [error, setError] = useState(""),
+    [reading, setReading] = useState(false),
+    [saving, setSaving] = useState(false),
+    [saved, setSaved] = useState(false),
+    [progress, setProgress] = useState(0),
+    [ocr, setOcr] = useState<OcrResult | null>(null),
+    [decision, setDecision] = useState<ScreeningDecision | null>(null),
+    [reference, setReference] = useState<CatalogueReference | null>(null),
+    [record, setRecord] = useState<ScanRecord | null>(null),
+    [retainImages, setRetainImages] = useState(false),
+    [uploadConsent, setUploadConsent] = useState(false),
+    videoRef = useRef<HTMLVideoElement>(null),
+    streamRef = useRef<MediaStream | null>(null),
+    inputRef = useRef<HTMLInputElement>(null),
+    openedUploadRef = useRef(false);
+
+  useEffect(() => () => {
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+  }, []);
+
+  useEffect(() => {
+    if (initialMode === "upload" && !openedUploadRef.current) {
+      openedUploadRef.current = true;
+      queueMicrotask(() => inputRef.current?.click());
+    }
+  }, [initialMode]);
+
+  const front = captures.find((item) => item.side === "front");
+
+  async function validateAndAdd(file: File, side: PackageSide) {
+    setError("");
+    if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
+      setError("Use a JPEG, PNG or WebP image.");
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      setError("This image is larger than the 10 MB limit.");
+      return;
+    }
+    try {
+      const normalized = await normalizeImage(file);
+      const quality = await qualityService.assess(normalized);
+      if (quality.issues.some((issue) => issue.code === "TOO_SMALL")) {
+        setError(quality.issues.find((issue) => issue.code === "TOO_SMALL")!.message);
+        return;
+      }
+      setCaptures((current) => {
+        const existing = current.find((item) => item.side === side);
+        if (existing) URL.revokeObjectURL(existing.url);
+        return [
+          ...current.filter((item) => item.side !== side),
+          { side, file: normalized, url: URL.createObjectURL(normalized), rotation: 0, quality },
+        ];
+      });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "The image could not be processed.");
+    }
+  }
+
+  async function openCamera(side: PackageSide) {
+    setTargetSide(side);
+    setCameraError("");
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setCameraError("Camera access is unavailable in this browser. Choose an image instead.");
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+        audio: false,
+      });
+      streamRef.current = stream;
+      setCameraOpen(true);
+      queueMicrotask(() => {
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          void videoRef.current.play();
+        }
+      });
+    } catch {
+      setCameraError("Camera permission was denied or no camera is available. Allow camera access in browser settings, then retry, or choose an image.");
+    }
+  }
+
+  function closeCamera() {
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    setCameraOpen(false);
+  }
+
+  async function captureFrame() {
+    const video = videoRef.current;
+    if (!video || !video.videoWidth) {
+      setCameraError("The camera is not ready yet.");
+      return;
+    }
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext("2d")?.drawImage(video, 0, 0);
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.9));
+    closeCamera();
+    if (blob) await validateAndAdd(new File([blob], `${targetSide}.jpg`, { type: "image/jpeg" }), targetSide);
+  }
+
+  async function rotate(side: PackageSide) {
+    const item = captures.find((value) => value.side === side);
+    if (!item) return;
+    const next = (item.rotation + 90) % 360;
+    const file = await normalizeImage(item.file, 90);
+    const quality = await qualityService.assess(file);
+    setCaptures((current) =>
+      current.map((value) => {
+        if (value.side !== side) return value;
+        URL.revokeObjectURL(value.url);
+        return { ...value, file, url: URL.createObjectURL(file), rotation: next, quality };
+      })
+    );
+  }
+
+  function remove(side: PackageSide) {
+    setCaptures((current) => {
+      const item = current.find((value) => value.side === side);
+      if (item) URL.revokeObjectURL(item.url);
+      return current.filter((value) => value.side !== side);
+    });
+  }
+
+  async function beginReview() {
+    if (!front) {
+      setError("Add a front-of-pack image before continuing.");
+      return;
+    }
+    if (!front.quality.acceptable) {
+      setError("The front image is too dark or blurry. Retake it in brighter, even light.");
+      return;
+    }
+    setReading(true);
+    setProgress(0);
+    setError("");
+    try {
+      setOcr(await ocrService.extract(front.file, setProgress));
+      setStage("review");
+    } catch {
+      setError("OCR text reading failed. Please retake the photo in good lighting.");
+    } finally {
+      setReading(false);
+    }
+  }
+
+  function editField(key: keyof ExtractedCandidates, value: string) {
+    if (ocr) setOcr({ ...ocr, fields: correctField(ocr.fields, key, value) });
+  }
+
+  async function findReference(): Promise<CatalogueReference | null> {
+    if (!ocr) return null;
+    const registration = ocr.fields.registrationNumber.value.trim();
+    const productName = ocr.fields.productName.value.trim().replace(/[%_]/g, "");
+    if (!registration && productName.length < 2) return null;
+
+    if (isSupabaseConfigured()) {
+      try {
+        const supabase = createClient();
+        let query = supabase
+          .from("reference_versions")
+          .select("id, version, packaging_version, package_text, reviewed_at, source_name, product_id, products!inner(id,name,presentation,strength,dosage_form,manufacturer,registration_number)")
+          .eq("status", "published")
+          .limit(1);
+        if (registration) query = query.eq("products.registration_number", registration);
+        else query = query.ilike("products.name", `%${productName}%`);
+        const { data } = await query.maybeSingle();
+        if (data) {
+          const product = (Array.isArray(data.products) ? data.products[0] : data.products) as unknown as {
+            id: string;
+            name: string;
+            presentation: string;
+            strength: string;
+            dosage_form: string;
+            manufacturer: string;
+            registration_number: string | null;
+          };
+          return {
+            id: data.id,
+            version: data.version,
+            productId: product.id,
+            productName: product.name,
+            presentation: product.presentation,
+            strength: product.strength,
+            dosageForm: product.dosage_form,
+            manufacturer: product.manufacturer,
+            registrationNumber: product.registration_number ?? "",
+            packageText: data.package_text ?? [],
+            packagingVersion: data.packaging_version,
+            reviewedAt: data.reviewed_at,
+            sourceName: data.source_name,
+          };
+        }
+      } catch {}
+    }
+
+    // Local published references fallback
+    const localVersions = getLocalVersions().filter((v) => v.status === "published");
+    const matched = localVersions.find((v) => {
+      const prod = v.products;
+      if (!prod) return false;
+      if (registration && prod.registration_number && prod.registration_number.toLowerCase().includes(registration.toLowerCase())) {
+        return true;
+      }
+      if (productName && prod.name.toLowerCase().includes(productName.toLowerCase())) {
+        return true;
+      }
+      return false;
+    });
+
+    if (matched && matched.products) {
+      return {
+        id: matched.id,
+        version: matched.version,
+        productId: matched.products.id,
+        productName: matched.products.name,
+        presentation: matched.products.presentation,
+        strength: matched.products.strength,
+        dosageForm: matched.products.dosage_form,
+        manufacturer: matched.products.manufacturer,
+        registrationNumber: matched.products.registration_number ?? "",
+        packageText: matched.package_text ?? [],
+        packagingVersion: matched.packaging_version,
+        reviewedAt: matched.reviewed_at ?? new Date().toISOString(),
+        sourceName: matched.source_name,
+      };
+    }
+
+    return null;
+  }
+
+  async function screen() {
+    if (!front || !ocr) return;
+    setError("");
+    const matchedReference = await findReference();
+    const result = decisionService.decide({ quality: front.quality, ocr, reference: matchedReference, hasFrontImage: true });
+    const next: ScanRecord = {
+      id: crypto.randomUUID(),
+      createdAt: new Date().toISOString(),
+      productName: ocr.fields.productName.value || "Unidentified medicine",
+      manufacturer: ocr.fields.manufacturer.value,
+      batchNumber: ocr.fields.batchNumber.value,
+      expiryDate: ocr.fields.expiryDate.value,
+      registrationNumber: ocr.fields.registrationNumber.value,
+      extractedText: ocr.rawText,
+      outcome: result.outcome,
+      rationale: result.explanation,
+      source: "guest",
+      expiryStatus: result.expiryStatus,
+      reasonCodes: result.reasonCodes,
+      comparisonScope: result.comparisonScope,
+      policyVersion: result.policyVersion,
+      modelIdentifier: result.modelIdentifier,
+      referenceVersion: result.referenceVersion,
+      referenceReviewedAt: result.referenceReviewedAt,
+      referenceSource: matchedReference?.sourceName ?? null,
+      checks: result.checks,
+    };
+    setReference(matchedReference);
+    setRecord(next);
+    setDecision(result);
+    setSaved(false);
+    setStage("result");
+  }
+
+  async function persistResult() {
+    if (!record || !decision || !ocr || saved) return;
+    if (retainImages && !uploadConsent) {
+      setError("Consent is required before images can be stored.");
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      if (!isSupabaseConfigured()) {
+        const localUser = getLocalUser();
+        const scanToSave: ScanRecord = localUser ? { ...record, source: "account" } : record;
+        saveGuestScan(scanToSave);
+        setRecord(scanToSave);
+        setSaved(true);
+        return;
+      }
+      const supabase = createClient();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) {
+        saveGuestScan(record);
+        setSaved(true);
+        return;
+      }
+      const payload = {
+        id: record.id,
+        user_id: user.id,
+        product_name: record.productName,
+        manufacturer: record.manufacturer || null,
+        batch_number: record.batchNumber || null,
+        expiry_date_text: record.expiryDate || null,
+        registration_number: record.registrationNumber || null,
+        extracted_text: record.extractedText,
+        outcome: record.outcome,
+        rationale: record.rationale,
+        reference_version_id: decision.referenceId,
+        reference_snapshot: reference,
+        reason_codes: decision.reasonCodes,
+        comparison_scope: decision.comparisonScope,
+        expiry_status: decision.expiryStatus,
+        retain_images: retainImages,
+        decision_policy_identifier: decision.policyVersion,
+        model_identifier: decision.modelIdentifier,
+      };
+      const { data: cloudScan, error: saveError } = await supabase
+        .from("scans")
+        .insert(payload)
+        .select("id,public_scan_id,created_at")
+        .single();
+      if (saveError || !cloudScan) throw saveError ?? new Error("The scan record was not returned.");
+      let consentId: string | null = null;
+      const cleanup = async (paths: string[] = []) => {
+        if (paths.length) await supabase.storage.from("package-images").remove(paths);
+        await supabase.from("scans").delete().eq("id", cloudScan.id);
+        if (consentId) await supabase.from("consent_records").delete().eq("id", consentId);
+      };
+      const { error: fieldsError } = await supabase.from("extracted_fields").insert(
+        Object.entries(ocr.fields).map(([name, value]) => ({
+          scan_id: cloudScan.id,
+          field_name: name,
+          machine_value: value.source === "machine" ? value.value : null,
+          machine_confidence: value.confidence,
+          user_value: value.source === "manual" ? value.value : null,
+          source: value.source,
+          corrected: value.corrected,
+          ambiguous: value.ambiguous ?? false,
+        }))
+      );
+      if (fieldsError) {
+        await cleanup();
+        throw fieldsError;
+      }
+      if (decision.checks.length) {
+        const { error: checksError } = await supabase.from("screening_checks").insert(
+          decision.checks.map((check) => ({
+            scan_id: cloudScan.id,
+            reason_code: check.code,
+            status: check.status,
+            observed: check.observed,
+            expected: check.expected,
+            evidenceSource: check.evidenceSource,
+          }))
+        );
+        if (checksError) {
+          await cleanup();
+          throw checksError;
+        }
+      }
+      const uploaded: string[] = [];
+      if (retainImages) {
+        const { data: consent, error: consentError } = await supabase
+          .from("consent_records")
+          .insert({ user_id: user.id, purpose: "image_retention", granted: true, policy_version: "privacy-v1" })
+          .select("id")
+          .single();
+        if (consentError || !consent) {
+          await cleanup();
+          throw consentError ?? new Error("Image retention consent was not recorded.");
+        }
+        consentId = consent.id;
+        for (const item of captures) {
+          const path = `${user.id}/${cloudScan.id}/${item.side}.jpg`;
+          const { error: uploadError } = await supabase.storage
+            .from("package-images")
+            .upload(path, item.file, { contentType: "image/jpeg" });
+          if (uploadError) {
+            await cleanup(uploaded);
+            throw uploadError;
+          }
+          uploaded.push(path);
+          const { error: imageError } = await supabase.from("scan_images").insert({
+            scan_id: cloudScan.id,
+            user_id: user.id,
+            storage_path: path,
+            package_side: item.side,
+            width: item.quality.measurements.width,
+            height: item.quality.measurements.height,
+            bytes: item.file.size,
+            quality_measurements: item.quality.measurements,
+          });
+          if (imageError) {
+            await cleanup(uploaded);
+            throw imageError;
+          }
+        }
+      }
+      setRecord({
+        ...record,
+        id: cloudScan.id,
+        publicScanId: cloudScan.public_scan_id,
+        createdAt: cloudScan.created_at,
+        source: "account",
+      });
+      setSaved(true);
+    } catch {
+      setError("The scan could not be saved. The verification result is still displayed.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function reset() {
+    setStage("capture");
+    setCaptures((current) => {
+      current.forEach((item) => URL.revokeObjectURL(item.url));
+      return [];
+    });
+    setOcr(null);
+    setDecision(null);
+    setReference(null);
+    setRecord(null);
+    setSaved(false);
+    setError("");
+    setProgress(0);
+    setRetainImages(false);
+    setUploadConsent(false);
+  }
+
+  async function deleteResult() {
+    if (!record) return;
+    if (record.source === "account" && isSupabaseConfigured()) {
+      const supabase = createClient();
+      const { data: stored } = await supabase.from("scan_images").select("storage_path").eq("scan_id", record.id);
+      if (stored?.length) await supabase.storage.from("package-images").remove(stored.map((item) => item.storage_path));
+      await supabase.from("scans").delete().eq("id", record.id);
+    } else deleteGuestScan(record.id);
+    reset();
+  }
+
+  if (stage === "capture")
+    return (
+      <>
+        <div className="capture-grid">
+          <section className="card capture-primary">
+            <span className="eyebrow">Step 1 of 3 · Capture</span>
+            <h2>Add the front of the package</h2>
+            <p>Keep the medicine pack centered and well-lit. Avoid shadows and glare on the label.</p>
+            {front ? (
+              <ImageTile item={front} required onRotate={() => rotate("front")} onRemove={() => remove("front")} />
+            ) : (
+              <div className="scan-target">
+                <Camera size={48} />
+                <i className="t1" />
+                <i className="t2" />
+                <i className="t3" />
+                <i className="t4" />
+              </div>
+            )}
+            <div className="capture-actions">
+              <button className="button button-primary" onClick={() => openCamera("front")}>
+                <Camera size={18} />
+                {front ? "Retake front" : "Use rear camera"}
+              </button>
+              <button
+                className="button button-secondary"
+                onClick={() => {
+                  setTargetSide("front");
+                  inputRef.current?.click();
+                }}
+              >
+                <Upload size={18} />
+                Choose image
+              </button>
+            </div>
+            <input
+              ref={inputRef}
+              hidden
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              capture="environment"
+              onChange={(event) => {
+                void validateAndAdd(event.target.files?.[0] as File, targetSide);
+                event.currentTarget.value = "";
+              }}
+            />
+            {cameraError && (
+              <div className="form-alert error" role="alert">
+                {cameraError}
+              </div>
+            )}
+            {error && (
+              <div className="form-alert error" role="alert">
+                {error}
+              </div>
+            )}
+            {reading ? (
+              <div className="reading">
+                <ScanLine />
+                <strong>Reading visible label text… {progress}%</strong>
+                <div className="progress">
+                  <span style={{ width: `${progress}%` }} />
+                </div>
+              </div>
+            ) : (
+              <button disabled={!front} onClick={beginReview} className="button button-primary full">
+                Review extracted details
+              </button>
+            )}
+          </section>
+          <aside className="card optional-images">
+            <span className="eyebrow">Optional evidence</span>
+            <h3>Back or side panels</h3>
+            <p>Additional photos can help check batch numbers, expiry dates, and manufacturer details.</p>
+            {(["back", "side"] as PackageSide[]).map((side) => {
+              const item = captures.find((value) => value.side === side);
+              return item ? (
+                <ImageTile key={side} item={item} onRotate={() => rotate(side)} onRemove={() => remove(side)} />
+              ) : (
+                <button
+                  key={side}
+                  className="add-side"
+                  onClick={() => {
+                    setTargetSide(side);
+                    inputRef.current?.click();
+                  }}
+                >
+                  <Upload size={18} />
+                  Add {side} image
+                </button>
+              );
+            })}
+            <div className="info-note">
+              <Info size={18} />
+              <span>For best results, make sure text is sharp and unblurred.</span>
+            </div>
+          </aside>
+        </div>
+        {cameraOpen && (
+          <div className="camera-modal" role="dialog" aria-modal="true" aria-label="Camera capture">
+            <div>
+              <video ref={videoRef} playsInline muted />
+              <button className="camera-close" onClick={closeCamera} aria-label="Close camera">
+                <X />
+              </button>
+              <button className="camera-shutter" onClick={captureFrame} aria-label="Take photograph">
+                <span />
+              </button>
+            </div>
+          </div>
+        )}
+      </>
+    );
+
+  if (stage === "review" && ocr)
+    return (
+      <div className="review-grid">
+        <section className="card image-review">
+          <img src={front!.url} alt="Front of selected medicine package" />
+          <div className="quality-summary">
+            <strong>Photo quality checks</strong>
+            <span>
+              {front!.quality.measurements.width} × {front!.quality.measurements.height}px · {Math.round(front!.file.size / 1024)} KB
+            </span>
+            {front!.quality.issues.map((issue) => (
+              <small key={issue.code}>{issue.message}</small>
+            ))}
+          </div>
+          <button className="button button-secondary" onClick={() => setStage("capture")}>
+            Retake or add images
+          </button>
+        </section>
+        <section className="card extracted-form">
+          <span className="eyebrow">Step 2 of 3 · Review</span>
+          <h2>Check detected details</h2>
+          <p>Verify detected text from the packaging. You can edit any field before checking against reference records.</p>
+          {(Object.keys(fieldLabels) as Array<keyof ExtractedCandidates>).map((key) => {
+            const field = ocr.fields[key];
+            return (
+              <div className="field extracted-field" key={key}>
+                <label htmlFor={key}>
+                  {fieldLabels[key]}{" "}
+                  <span className={`source-tag source-${field.source}`}>
+                    {field.source}
+                    {field.confidence !== null ? ` · ${field.confidence}%` : ""}
+                  </span>
+                </label>
+                <input
+                  id={key}
+                  value={field.value}
+                  onChange={(event) => editField(key, event.target.value)}
+                  placeholder="Not detected"
+                />
+                {field.ambiguous && (
+                  <small className="field-warning">Date format uncertain — please confirm month and year.</small>
+                )}
+              </div>
+            );
+          })}
+          <details>
+            <summary>Raw scanned text</summary>
+            <p className="ocr-engine">
+              {ocr.engineId} · text detection confidence {ocr.confidence ?? "n/a"}
+              {ocr.confidence !== null ? "%" : ""}
+            </p>
+            <textarea readOnly value={ocr.rawText} rows={7} />
+          </details>
+          <label className="consent">
+            <input checked={retainImages} onChange={(event) => setRetainImages(event.target.checked)} type="checkbox" />
+            <span>
+              <strong>Save package photo with my scan record</strong>
+              <small>Images are kept securely on your device or private cloud history.</small>
+            </span>
+          </label>
+          {retainImages && (
+            <label className="consent">
+              <input checked={uploadConsent} onChange={(event) => setUploadConsent(event.target.checked)} type="checkbox" />
+              <span>
+                <strong>I consent to private photo storage.</strong>
+                <small>Photos are never shared publicly or used for model training without permission.</small>
+              </span>
+            </label>
+          )}
+          {error && <div className="form-alert error">{error}</div>}
+          <button onClick={screen} className="button button-primary full">
+            Check against verified records <ScanLine size={18} />
+          </button>
+        </section>
+      </div>
+    );
+
+  return (
+    <div className="result-wrap">
+      {record && decision && (
+        <>
+          <div className="result-top card">
+            <span className="eyebrow">Step 3 of 3 · Verification Result</span>
+            <OutcomeCard outcome={record.outcome} rationale={record.rationale} />
+            <p className="result-disclaimer">{SCREENING_DISCLAIMER}</p>
+          </div>
+          <div className="result-grid">
+            <section className="card result-image">
+              <img src={front!.url} alt="Screened front-of-pack evidence" />
+              <span>{decision.comparisonScope === "label_details" ? "Verified against reference" : "No reference comparison"}</span>
+            </section>
+            <section className="card result-details">
+              <h2>Screening summary</h2>
+              <dl>
+                <div>
+                  <dt>Detected medicine</dt>
+                  <dd>{record.productName}</dd>
+                </div>
+                <div>
+                  <dt>Expiry status</dt>
+                  <dd className={`expiry-${decision.expiryStatus}`}>{decision.expiryStatus.replaceAll("_", " ")}</dd>
+                </div>
+                <div>
+                  <dt>Reference record</dt>
+                  <dd>{decision.referenceVersion ? `v${decision.referenceVersion}` : "None in catalogue"}</dd>
+                </div>
+                <div>
+                  <dt>Inspection date</dt>
+                  <dd>
+                    {decision.referenceReviewedAt
+                      ? new Date(decision.referenceReviewedAt).toLocaleDateString("en-NG")
+                      : "No reference record"}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Reference source</dt>
+                  <dd>{reference?.sourceName ?? "No reference record"}</dd>
+                </div>
+                <div>
+                  <dt>Verification policy</dt>
+                  <dd>{decision.policyVersion}</dd>
+                </div>
+              </dl>
+            </section>
+          </div>
+          <section className="card evidence-card">
+            <h2>Package verification checks</h2>
+            {decision.checks.length ? (
+              decision.checks.map((check) => (
+                <div className="evidence-row" key={check.code}>
+                  <span className={`check-status check-${check.status}`}>{check.status}</span>
+                  <div>
+                    <strong>{check.label}</strong>
+                    <small>
+                      {check.code} · {check.evidenceSource.replaceAll("_", " ")}
+                    </small>
+                  </div>
+                  <span>
+                    {check.observed || "Not detected"} / {check.expected || "No reference standard"}
+                  </span>
+                </div>
+              ))
+            ) : (
+              <p>No reference checks were available for this package.</p>
+            )}
+          </section>
+          <div className="card next-steps">
+            <h2>Recommended next steps</h2>
+            <p>
+              {saved && record.source === "account"
+                ? "This result is saved to your account and can be submitted to a pharmacist for review."
+                : "Always consult a licensed pharmacist if any packaging detail looks suspicious."}
+            </p>
+            {error && (
+              <div className="form-alert error" role="alert">
+                {error}
+              </div>
+            )}
+            {saved && (
+              <div className="form-alert success" role="status">
+                {record.source === "account" ? "Saved to your private scan history." : "Saved only in this browser on this device."}
+              </div>
+            )}
+            <div className="result-actions">
+              {!saved && (
+                <button onClick={() => setStage("review")} className="button button-secondary">
+                  Review extracted details
+                </button>
+              )}
+              <button onClick={() => setStage("capture")} className="button button-secondary">
+                Retake photograph
+              </button>
+              <button onClick={reset} className="button button-secondary">
+                <Camera size={18} />
+                Scan another package
+              </button>
+              {!saved ? (
+                <button onClick={persistResult} disabled={saving} className="button button-primary">
+                  {saving ? "Saving…" : "Save scan"}
+                </button>
+              ) : record.source === "account" ? (
+                <>
+                  <Link className="button button-primary" href={`/history/${record.id}`}>
+                    View saved scan
+                  </Link>
+                  <Link className="button button-secondary" href={`/reports?scan=${record.id}`}>
+                    Request pharmacist review
+                  </Link>
+                </>
+              ) : (
+                <Link className="button button-secondary" href="/signup">
+                  Create account for review
+                </Link>
+              )}
+              <button onClick={deleteResult} className="button button-ghost">
+                <Trash2 size={17} />
+                {saved ? "Delete saved scan" : "Discard result"}
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
 }
 
-function ImageTile({item,required=false,onRotate,onRemove}:{item:Capture;required?:boolean;onRotate:()=>void;onRemove:()=>void}){return <div className="image-tile"><img src={item.url} alt={`${item.side} package image`}/><div><strong>{item.side} {required&&"· required"}</strong><small>{item.quality.measurements.width} × {item.quality.measurements.height}px</small></div><button onClick={onRotate} type="button">Rotate</button><button onClick={onRemove} type="button">Remove</button></div>}
+function ImageTile({
+  item,
+  required = false,
+  onRotate,
+  onRemove,
+}: {
+  item: Capture;
+  required?: boolean;
+  onRotate: () => void;
+  onRemove: () => void;
+}) {
+  return (
+    <div className="image-tile">
+      <img src={item.url} alt={`${item.side} package image`} />
+      <div>
+        <strong>
+          {item.side} {required && "· required"}
+        </strong>
+        <small>
+          {item.quality.measurements.width} × {item.quality.measurements.height}px
+        </small>
+      </div>
+      <button onClick={onRotate} type="button">
+        Rotate
+      </button>
+      <button onClick={onRemove} type="button">
+        Remove
+      </button>
+    </div>
+  );
+}
