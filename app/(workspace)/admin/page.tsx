@@ -72,8 +72,9 @@ export default async function Page() {
         title="Administration"
         description="Manage verified medicines, review registered package references, and configure user permissions."
       />
-      <AdminCatalogue initialCounts={counts} />
-      <ReferenceImageManager />
+      <AdminCatalogue initialCounts={counts}>
+        <ReferenceImageManager />
+      </AdminCatalogue>
     </>
   );
 }

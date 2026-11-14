@@ -100,7 +100,7 @@ export function AuthForm({ mode, redirectTo = "/dashboard" }: { mode: AuthMode; 
       return;
     }
 
-    // Local / Offline authentication handling
+    // Local authentication handling
     try {
       const cleanEmail = email.trim().toLowerCase();
 
@@ -275,7 +275,7 @@ export function AuthForm({ mode, redirectTo = "/dashboard" }: { mode: AuthMode; 
               Please wait…
             </>
           ) : mode === "login" ? (
-            "Log in & Enter"
+            "Log in securely"
           ) : mode === "signup" ? (
             "Create account & Enter app"
           ) : mode === "forgot" ? (
