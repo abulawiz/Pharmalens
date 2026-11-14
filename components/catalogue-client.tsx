@@ -101,7 +101,7 @@ export function CatalogueClient() {
           <p>
             {rows.length
               ? `Latest verified inspection: ${freshest}. Active reference packages are used during camera verification.`
-              : "No production record is fabricated or silently replaced with demonstration data."}
+              : "No production record is fabricated. Only officially verified medicines appear in this catalogue."}
           </p>
         </div>
         <span>{loaded ? `${rows.length} published version${rows.length === 1 ? "" : "s"}` : "Loading…"}</span>

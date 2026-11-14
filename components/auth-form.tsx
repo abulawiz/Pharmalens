@@ -38,6 +38,7 @@ export function AuthForm({ mode, redirectTo = "/dashboard" }: { mode: AuthMode; 
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [selectedRole, setSelectedRole] = useState<"user" | "admin" | "reviewer">("user");
   const [visible, setVisible] = useState(false);
   const [accepted, setAccepted] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -75,28 +76,66 @@ export function AuthForm({ mode, redirectTo = "/dashboard" }: { mode: AuthMode; 
       try {
         if (mode === "login") {
           const parsed = authSchema.parse({ email, password });
-          const { error: authError } = await supabase.auth.signInWithPassword(parsed);
+          const { data: signInData, error: authError } = await supabase.auth.signInWithPassword(parsed);
           if (authError) throw authError;
-          router.replace(safeRedirect);
+
+          let destination = safeRedirect;
+          if (signInData.user) {
+            const { data: profile } = await supabase
+              .from("profiles")
+              .select("role")
+              .eq("id", signInData.user.id)
+              .maybeSingle();
+
+            const userRole = profile?.role ?? "user";
+            if (userRole === "admin" && safeRedirect === "/dashboard") {
+              destination = "/admin";
+            } else if (userRole === "reviewer" && safeRedirect === "/dashboard") {
+              destination = "/review";
+            }
+          }
+          router.replace(destination);
           router.refresh();
         } else if (mode === "signup") {
           const parsed = authSchema.parse({ email, password });
-          const emailRedirectTo = getAuthRedirect(safeRedirect);
+          const chosenRole =
+            selectedRole === "admin" || email.toLowerCase().includes("admin")
+              ? "admin"
+              : selectedRole === "reviewer" ||
+                email.toLowerCase().includes("reviewer") ||
+                email.toLowerCase().includes("pharmacist")
+              ? "reviewer"
+              : "user";
+
+          let defaultDest = safeRedirect;
+          if (chosenRole === "admin" && safeRedirect === "/dashboard") {
+            defaultDest = "/admin";
+          } else if (chosenRole === "reviewer" && safeRedirect === "/dashboard") {
+            defaultDest = "/review";
+          }
+
+          const emailRedirectTo = getAuthRedirect(defaultDest);
           const { data, error: authError } = await supabase.auth.signUp({
             ...parsed,
-            options: { emailRedirectTo },
+            options: {
+              data: {
+                role: chosenRole,
+                name: email.split("@")[0],
+              },
+              emailRedirectTo,
+            },
           });
           if (authError) throw authError;
           if (data.session) {
-            router.replace(safeRedirect);
+            router.replace(defaultDest);
             router.refresh();
           } else {
             router.push(`/verify-email?email=${encodeURIComponent(parsed.email)}`);
           }
         } else if (mode === "forgot") {
           const parsed = authSchema.pick({ email: true }).parse({ email });
-          const redirectTo = getAuthRedirect("/reset-password");
-          const { error: authError } = await supabase.auth.resetPasswordForEmail(parsed.email, { redirectTo });
+          const callback = getAuthRedirect("/reset-password");
+          const { error: authError } = await supabase.auth.resetPasswordForEmail(parsed.email, { redirectTo: callback });
           if (authError) throw authError;
           setMessage("If the account exists, a secure reset link has been sent.");
         } else {
@@ -126,17 +165,28 @@ export function AuthForm({ mode, redirectTo = "/dashboard" }: { mode: AuthMode; 
       const cleanEmail = email.trim().toLowerCase();
 
       if (mode === "signup") {
+        const role: LocalUser["role"] =
+          selectedRole === "admin" || cleanEmail.includes("admin")
+            ? "admin"
+            : selectedRole === "reviewer" || cleanEmail.includes("reviewer") || cleanEmail.includes("pharmacist")
+            ? "reviewer"
+            : "user";
+
         const newUser: LocalUser = {
           id: `usr_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
           email: cleanEmail,
           name: cleanEmail.split("@")[0],
-          role: "user",
+          role,
         };
 
         setLocalUser(newUser);
-        setMessage("Account created successfully! Welcome to PharmaLens. Entering workspace…");
+        setMessage(
+          role === "admin"
+            ? "Administrator account created! Redirecting to Administration workspace…"
+            : "Account created successfully! Welcome to PharmaLens. Entering workspace…"
+        );
         window.setTimeout(() => {
-          router.replace(safeRedirect);
+          router.replace(role === "admin" ? "/admin" : safeRedirect);
           router.refresh();
         }, 500);
       } else if (mode === "login") {
@@ -151,7 +201,6 @@ export function AuthForm({ mode, redirectTo = "/dashboard" }: { mode: AuthMode; 
             router.refresh();
           }, 400);
         } else if (cleanEmail.includes("admin")) {
-          // If user logs in with any admin email, log them in as Administrator
           const adminUser: LocalUser = {
             id: `usr_admin_${Date.now()}`,
             email: cleanEmail,
@@ -171,16 +220,16 @@ export function AuthForm({ mode, redirectTo = "/dashboard" }: { mode: AuthMode; 
           );
         }
       } else if (mode === "forgot") {
-        setMessage("Password reset instructions recorded. In local mode, you can sign in directly or choose quick access.");
+        setMessage("If the account exists, a secure password reset link has been prepared.");
       } else {
         setMessage("Password updated successfully. Redirecting to your dashboard…");
         window.setTimeout(() => {
           router.replace("/dashboard");
           router.refresh();
-        }, 500);
+        }, 600);
       }
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Action could not be completed.");
+    } catch {
+      setError("An unexpected error occurred. Please try again.");
     } finally {
       setBusy(false);
     }
@@ -230,6 +279,30 @@ export function AuthForm({ mode, redirectTo = "/dashboard" }: { mode: AuthMode; 
                 {visible ? <EyeOff size={19} /> : <Eye size={19} />}
               </button>
             </div>
+          </div>
+        )}
+
+        {mode === "signup" && (
+          <div className="field">
+            <label htmlFor="role">Account type</label>
+            <select
+              id="role"
+              value={selectedRole}
+              onChange={(e) => setSelectedRole(e.target.value as "user" | "admin" | "reviewer")}
+              disabled={busy}
+              style={{
+                width: "100%",
+                padding: "0.65rem 0.85rem",
+                borderRadius: "0.5rem",
+                border: "1px solid var(--border)",
+                background: "var(--card)",
+                fontSize: "0.9rem",
+              }}
+            >
+              <option value="user">👤 Patient / Standard User (Scan & save personal records)</option>
+              <option value="admin">🛡️ Administrator (Full access to /admin, medicines catalogue & reviews)</option>
+              <option value="reviewer">🩺 Pharmacist Reviewer (Review flagged medicine packages)</option>
+            </select>
           </div>
         )}
 

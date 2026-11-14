@@ -42,9 +42,6 @@ export default function LandingPage() {
                 Create free account <ChevronRight size={18} />
               </Link>
             </div>
-            <Link href="/demo" className="demo-link">
-              Explore the clearly labelled fictional demo
-            </Link>
             <div className="guest-note">
               <ShieldCheck size={18} />
               <span>
