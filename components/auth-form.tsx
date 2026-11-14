@@ -12,11 +12,32 @@ import { getLocalProfiles, setLocalUser, type LocalUser } from "@/lib/local-stor
 
 export type AuthMode = "login" | "signup" | "forgot" | "reset";
 
+function authErrorMessage(cause: unknown, mode: AuthMode) {
+  const error = cause as { code?: string; message?: string; status?: number };
+  const code = error.code ?? "";
+  const detail = error.message ?? "";
+
+  if (code === "email_not_confirmed") return "Please confirm your email address before logging in. Check your inbox for the verification link.";
+  if (code === "weak_password" || /password.*(weak|short)|weak password/i.test(detail)) return detail;
+  if (/recovery session is missing or expired/i.test(detail)) return detail;
+  if (error.status === 429 || /rate limit|too many requests/i.test(detail)) return "Too many attempts. Please wait a little while and try again.";
+  if (mode === "login" && (code === "invalid_credentials" || /invalid login credentials/i.test(detail))) return "Invalid email or password.";
+  if (mode === "signup" && (code === "user_already_exists" || /already registered/i.test(detail))) return "If an account exists for this email, try logging in or requesting a password reset.";
+  return "Authentication could not be completed. Please try again.";
+}
+
+function getAuthRedirect(next: string) {
+  const redirect = new URL(
+    process.env.NEXT_PUBLIC_DEV_SUPABASE_REDIRECT_URL ?? `${window.location.origin}/auth/callback`
+  );
+  redirect.searchParams.set("next", next);
+  return redirect.toString();
+}
+
 export function AuthForm({ mode, redirectTo = "/dashboard" }: { mode: AuthMode; redirectTo?: string }) {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [selectedRole, setSelectedRole] = useState<"user" | "admin" | "reviewer">("user");
   const [visible, setVisible] = useState(false);
   const [accepted, setAccepted] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -60,10 +81,10 @@ export function AuthForm({ mode, redirectTo = "/dashboard" }: { mode: AuthMode; 
           router.refresh();
         } else if (mode === "signup") {
           const parsed = authSchema.parse({ email, password });
-          const callback = `${location.origin}/auth/callback?next=${encodeURIComponent(safeRedirect)}`;
+          const emailRedirectTo = getAuthRedirect(safeRedirect);
           const { data, error: authError } = await supabase.auth.signUp({
             ...parsed,
-            options: { emailRedirectTo: callback },
+            options: { emailRedirectTo },
           });
           if (authError) throw authError;
           if (data.session) {
@@ -74,8 +95,8 @@ export function AuthForm({ mode, redirectTo = "/dashboard" }: { mode: AuthMode; 
           }
         } else if (mode === "forgot") {
           const parsed = authSchema.pick({ email: true }).parse({ email });
-          const callback = `${location.origin}/auth/callback?next=${encodeURIComponent("/reset-password")}`;
-          const { error: authError } = await supabase.auth.resetPasswordForEmail(parsed.email, { redirectTo: callback });
+          const redirectTo = getAuthRedirect("/reset-password");
+          const { error: authError } = await supabase.auth.resetPasswordForEmail(parsed.email, { redirectTo });
           if (authError) throw authError;
           setMessage("If the account exists, a secure reset link has been sent.");
         } else {
@@ -93,7 +114,7 @@ export function AuthForm({ mode, redirectTo = "/dashboard" }: { mode: AuthMode; 
           }, 700);
         }
       } catch (cause) {
-        setError(cause instanceof Error ? cause.message : "Authentication could not be completed. Please try again.");
+        setError(authErrorMessage(cause, mode));
       } finally {
         setBusy(false);
       }
@@ -105,28 +126,17 @@ export function AuthForm({ mode, redirectTo = "/dashboard" }: { mode: AuthMode; 
       const cleanEmail = email.trim().toLowerCase();
 
       if (mode === "signup") {
-        const role: LocalUser["role"] =
-          selectedRole === "admin" || cleanEmail.includes("admin")
-            ? "admin"
-            : selectedRole === "reviewer" || cleanEmail.includes("reviewer") || cleanEmail.includes("pharmacist")
-            ? "reviewer"
-            : "user";
-
         const newUser: LocalUser = {
           id: `usr_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
           email: cleanEmail,
           name: cleanEmail.split("@")[0],
-          role,
+          role: "user",
         };
 
         setLocalUser(newUser);
-        setMessage(
-          role === "admin"
-            ? "Administrator account created! Redirecting to Administration workspace…"
-            : "Account created successfully! Welcome to PharmaLens. Entering workspace…"
-        );
+        setMessage("Account created successfully! Welcome to PharmaLens. Entering workspace…");
         window.setTimeout(() => {
-          router.replace(role === "admin" ? "/admin" : safeRedirect);
+          router.replace(safeRedirect);
           router.refresh();
         }, 500);
       } else if (mode === "login") {
@@ -220,30 +230,6 @@ export function AuthForm({ mode, redirectTo = "/dashboard" }: { mode: AuthMode; 
                 {visible ? <EyeOff size={19} /> : <Eye size={19} />}
               </button>
             </div>
-          </div>
-        )}
-
-        {mode === "signup" && (
-          <div className="field">
-            <label htmlFor="role">Account type</label>
-            <select
-              id="role"
-              value={selectedRole}
-              onChange={(e) => setSelectedRole(e.target.value as "user" | "admin" | "reviewer")}
-              disabled={busy}
-              style={{
-                width: "100%",
-                padding: "0.65rem 0.85rem",
-                borderRadius: "0.5rem",
-                border: "1px solid var(--border)",
-                background: "var(--card)",
-                fontSize: "0.9rem",
-              }}
-            >
-              <option value="user">👤 Patient / Standard User (Scan & save personal records)</option>
-              <option value="admin">🛡️ Administrator (Full access to /admin, medicines catalogue & reviews)</option>
-              <option value="reviewer">🩺 Pharmacist Reviewer (Review flagged medicine packages)</option>
-            </select>
           </div>
         )}
 

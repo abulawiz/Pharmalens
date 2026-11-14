@@ -6,6 +6,7 @@ import { ReferenceImageManager } from "@/components/reference-image-manager";
 import { LocalAdminLoginButton } from "@/components/local-auth-buttons";
 import { cookies } from "next/headers";
 import { getLocalUserFromCookie } from "@/lib/local-store";
+import { getSupabasePublicConfig } from "@/lib/supabase/config";
 
 export const metadata = { title: "Administration" };
 
@@ -31,7 +32,7 @@ export default async function Page() {
     }
   }
 
-  if (!authorized) {
+  if (!authorized && !getSupabasePublicConfig()) {
     const cookieStore = await cookies();
     const cookieHeader = cookieStore.get("pharmalens_local_user")?.value;
     const localUser = cookieHeader ? getLocalUserFromCookie(`pharmalens_local_user=${cookieHeader}`) : null;

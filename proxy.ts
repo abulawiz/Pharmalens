@@ -24,7 +24,7 @@ export async function proxy(request: NextRequest) {
     } catch {}
   }
 
-  if (!signedIn) {
+  if (!signedIn && !config) {
     const localUserCookie = request.cookies.get("pharmalens_local_user")?.value;
     if (localUserCookie) {
       try {
