@@ -5,6 +5,7 @@ import { createClient } from "@/lib/supabase/server";
 import { LocalReviewerLoginButton } from "@/components/local-auth-buttons";
 import { cookies } from "next/headers";
 import { getLocalUserFromCookie } from "@/lib/local-store";
+import { getSupabasePublicConfig } from "@/lib/supabase/config";
 
 export const metadata = { title: "Review queue" };
 
@@ -20,7 +21,7 @@ export default async function Page() {
     }
   }
 
-  if (!allowed) {
+  if (!allowed && !getSupabasePublicConfig()) {
     const cookieStore = await cookies();
     const cookieHeader = cookieStore.get("pharmalens_local_user")?.value;
     const localUser = cookieHeader ? getLocalUserFromCookie(`pharmalens_local_user=${cookieHeader}`) : null;

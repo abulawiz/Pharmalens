@@ -3,9 +3,11 @@
 import { useRouter } from "next/navigation";
 import { LockKeyhole, ShieldCheck, Stethoscope, User } from "@/components/icons";
 import { PRESET_ACCOUNTS, setLocalUser, type LocalUser } from "@/lib/local-store";
+import { isSupabaseConfigured } from "@/lib/supabase/client";
 
 export function LocalAuthSwitch({ onLoggedIn, compact = false }: { onLoggedIn?: () => void; compact?: boolean }) {
   const router = useRouter();
+  if (isSupabaseConfigured()) return null;
 
   function handleLogin(account: LocalUser) {
     setLocalUser(account);
@@ -83,6 +85,7 @@ export function LocalAuthSwitch({ onLoggedIn, compact = false }: { onLoggedIn?: 
 
 export function LocalAdminLoginButton() {
   const router = useRouter();
+  if (isSupabaseConfigured()) return null;
 
   function enterAdmin() {
     setLocalUser(PRESET_ACCOUNTS[0]);
@@ -99,6 +102,7 @@ export function LocalAdminLoginButton() {
 
 export function LocalReviewerLoginButton() {
   const router = useRouter();
+  if (isSupabaseConfigured()) return null;
 
   function enterReviewer() {
     setLocalUser(PRESET_ACCOUNTS[1]);
