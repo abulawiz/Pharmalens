@@ -26,11 +26,12 @@ function authErrorMessage(cause: unknown, mode: AuthMode) {
   return "Authentication could not be completed. Please try again.";
 }
 
-function getAuthRedirect(next: string) {
+function getAuthRedirect(next: string, flow?: "welcome") {
   const redirect = new URL(
     process.env.NEXT_PUBLIC_DEV_SUPABASE_REDIRECT_URL ?? `${window.location.origin}/auth/callback`
   );
   redirect.searchParams.set("next", next);
+  if (flow) redirect.searchParams.set("flow", flow);
   return redirect.toString();
 }
 
@@ -81,13 +82,14 @@ export function AuthForm({ mode, redirectTo = "/dashboard" }: { mode: AuthMode; 
           router.refresh();
         } else if (mode === "signup") {
           const parsed = authSchema.parse({ email, password });
-          const emailRedirectTo = getAuthRedirect(safeRedirect);
+          const emailRedirectTo = getAuthRedirect(safeRedirect, "welcome");
           const { data, error: authError } = await supabase.auth.signUp({
             ...parsed,
             options: { emailRedirectTo },
           });
           if (authError) throw authError;
           if (data.session) {
+            void fetch("/api/auth/welcome", { method: "POST" }).catch(() => undefined);
             router.replace(safeRedirect);
             router.refresh();
           } else {
